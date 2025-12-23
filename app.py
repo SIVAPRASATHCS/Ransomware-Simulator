@@ -1,8 +1,6 @@
 import streamlit as st
 import time
 import os
-import tkinter as tk
-from tkinter import filedialog
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.backends import default_backend
 from datetime import datetime, timedelta
@@ -171,15 +169,13 @@ def decrypt_file(file_path):
     except Exception: return False
 
 def select_folder():
-    try:
-        root = tk.Tk()
-        root.withdraw()
-        root.wm_attributes('-topmost', 1)
-        folder_path = filedialog.askdirectory(master=root)
-        root.destroy()
-        return folder_path
-    except:
-        return None
+    # Streamlit-compatible folder selection (manual text input)
+    folder_path = st.text_input(
+        "📁 Enter folder path to simulate encryption:",
+        placeholder="e.g., C:/Users/YourName/Documents/TestFolder",
+        help="Enter the full path to a folder you want to use for this simulation"
+    )
+    return folder_path if folder_path else None
 
 def restore_files():
     folder = st.session_state.target_folder
