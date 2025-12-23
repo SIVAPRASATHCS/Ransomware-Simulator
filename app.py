@@ -187,25 +187,50 @@ def decrypt_file(filename):
         return False
 
 def select_folder():
-    # Cloud-compatible: Use file uploads instead of folder selection
-    st.markdown("**Upload files to simulate encryption:**")
-    uploaded_files = st.file_uploader(
-        "Choose files",
-        accept_multiple_files=True,
-        type=['txt', 'jpg', 'png', 'pdf', 'docx', 'xlsx'],
-        help="Upload test files for the simulation (they will be encrypted in-memory only)"
+    # Cloud-compatible: Upload a ZIP file representing a folder
+    st.markdown("**Upload a folder (as ZIP file) to simulate encryption:**")
+    st.info("💡 Compress your test folder into a .zip file and upload it here. All files inside will be encrypted!")
+    
+    uploaded_zip = st.file_uploader(
+        "Choose a ZIP file (your folder)",
+        type=['zip'],
+        help="Upload a zip file containing your test folder. All files will be encrypted."
     )
-    if uploaded_files:
-        st.session_state.uploaded_files = uploaded_files
-        return "cloud_simulation"
+    
+    if uploaded_zip:
+        import zipfile
+        import io
+        
+        # Extract files from zip
+        try:
+            with zipfile.ZipFile(io.BytesIO(uploaded_zip.read()), 'r') as zip_ref:
+                file_list = []
+                for file_info in zip_ref.filelist:
+                    if not file_info.is_dir():
+                        file_data = zip_ref.read(file_info.filename)
+                        # Create a file-like object
+                        file_obj = io.BytesIO(file_data)
+                        file_obj.name = file_info.filename
+                        file_list.append(file_obj)
+                
+                if file_list:
+                    st.session_state.uploaded_files = file_list
+                    st.session_state.original_folder_name = uploaded_zip.name.replace('.zip', '')
+                    return "cloud_simulation"
+                else:
+                    st.error("❌ No files found in the ZIP folder")
+        except Exception as e:
+            st.error(f"❌ Error reading ZIP file: {e}")
+    
     return None
 
 def restore_files():
     if st.session_state.is_encrypted and 'encrypted_files' in st.session_state:
+        file_count = len(st.session_state.encrypted_files)
         for filename in list(st.session_state.encrypted_files.keys()):
             decrypt_file(filename)
         st.session_state.is_encrypted = False
-        st.success("✅ Files decrypted! You can download them below.")
+        st.success(f"✅ Entire folder decrypted! ({file_count} files restored)")
 
 # --- PAGES ---
 
@@ -254,11 +279,18 @@ def page_lab_setup():
         st.markdown(f"<div class='cyber-card' style='border-color: var(--neon-red); color: var(--neon-red);'>⚠️ WARNING: Unverified Source Detected: {st.session_state.target_app_name}</div>", unsafe_allow_html=True)
         
         if st.checkbox("IGNORE WARNING & PROCEED"):
-            st.markdown("### 3. UPLOAD TARGET FILES")
+            st.markdown("### 3. SELECT TARGET FOLDER (ZIP)")
             folder = select_folder()
             if folder:
                 st.session_state.target_folder = folder
-                st.success(f"📁 {len(st.session_state.uploaded_files)} files uploaded")
+                folder_name = st.session_state.get('original_folder_name', 'uploaded_folder')
+                file_count = len(st.session_state.uploaded_files)
+                st.success(f"📁 Folder Locked: **{folder_name}** ({file_count} files)")
+                
+                # Show files in the folder
+                with st.expander("📂 View Files in Folder"):
+                    for f in st.session_state.uploaded_files:
+                        st.text(f"📄 {f.name}")
                 
                 if st.button("☠️ EXECUTE PAYLOAD"):
                     st.session_state.page = "attack_run"
@@ -310,9 +342,13 @@ def page_ransom_screen():
             st.session_state.page = "quiz"
             st.rerun()
             
+    folder_name = st.session_state.get('original_folder_name', 'Your Folder')
+    file_count = len(st.session_state.get('encrypted_files', {}))
+    
     st.markdown(f"""
     <div class='ransom-container'>
-        <h1 style='color:white; font-size: 3rem;'>FILES ENCRYPTED</h1>
+        <h1 style='color:white; font-size: 3rem;'>FOLDER ENCRYPTED</h1>
+        <p>📁 <b>{folder_name}</b> - {file_count} files locked</p>
         <p>IDENTIFIER: {st.session_state.attack_variant.upper()}</p>
         <h2 style='font-family: monospace;'>{str(remaining).split('.')[0]}</h2>
         <p>Send 0.5 BTC to unlock your data.</p>
@@ -406,23 +442,39 @@ def page_quiz():
             st.error(f"❌ FAILED. Score: {score}/10. You need to review cyber hygiene basics.")
             
         st.markdown("### 🔍 Attack Timeline Summary")
-        st.code(f"1. User downloaded {st.session_state.get('target_app_name')} (Trojan)\n2. Malware executed {st.session_state.attack_variant} encryption\n3. Files locked with AES-256\n4. User recovered via Simulation Tool")
+        folder_name = st.session_state.get('original_folder_name', 'test_folder')
+        file_count = len(st.session_state.get('decrypted_files', {}))
+        st.code(f"1. User downloaded {st.session_state.get('target_app_name')} (Trojan)\n2. Malware executed {st.session_state.attack_variant} encryption\n3. Entire folder '{folder_name}' locked with AES-256 ({file_count} files)\n4. User recovered via Simulation Tool")
         
-        # Show download buttons for decrypted files
+        # Download entire decrypted folder as ZIP
         if 'decrypted_files' in st.session_state and st.session_state.decrypted_files:
-            st.markdown("### 📥 Download Decrypted Files:")
-            for filename, data in st.session_state.decrypted_files.items():
-                st.download_button(
-                    label=f"⬇️ Download {filename}",
-                    data=data,
-                    file_name=filename,
-                    mime="application/octet-stream"
-                )
+            st.markdown("### 📥 Download Decrypted Folder:")
+            
+            # Create ZIP file in memory
+            import zipfile
+            import io
+            
+            zip_buffer = io.BytesIO()
+            with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
+                for filename, data in st.session_state.decrypted_files.items():
+                    zip_file.writestr(filename, data)
+            
+            zip_buffer.seek(0)
+            
+            st.download_button(
+                label=f"📦 Download Entire Folder ({folder_name}.zip)",
+                data=zip_buffer.getvalue(),
+                file_name=f"{folder_name}_decrypted.zip",
+                mime="application/zip",
+                use_container_width=True
+            )
+            
+            st.info(f"✅ All {file_count} files from your folder have been decrypted and packed into a ZIP file.")
         
         if st.button("RESTART SIMULATION"):
             # Clear all session state
             for key in ['page', 'is_encrypted', 'attack_start_time', 'uploaded_files', 
-                       'encrypted_files', 'decrypted_files', 'target_folder']:
+                       'encrypted_files', 'decrypted_files', 'target_folder', 'original_folder_name']:
                 if key in st.session_state:
                     del st.session_state[key]
             st.session_state.page = 'education'
