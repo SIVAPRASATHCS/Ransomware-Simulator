@@ -1,12 +1,18 @@
 import streamlit as st
 import time
 import os
-import tkinter as tk
-from tkinter import filedialog
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.backends import default_backend
 from datetime import datetime, timedelta
 import random
+
+# Try to import tkinter (only available in local deployment)
+try:
+    import tkinter as tk
+    from tkinter import filedialog
+    TKINTER_AVAILABLE = True
+except ImportError:
+    TKINTER_AVAILABLE = False
 
 # --- CONFIGURATION & ASSETS ---
 st.set_page_config(
@@ -211,6 +217,8 @@ def decrypt_file(file_path):
 
 def browse_folder():
     """Open folder browser dialog using tkinter"""
+    if not TKINTER_AVAILABLE:
+        return None
     try:
         root = tk.Tk()
         root.withdraw()
@@ -228,25 +236,39 @@ def browse_folder():
 def select_folder():
     # Local filesystem folder selection
     st.markdown("**Select folder to encrypt:**")
-    st.warning("⚠️ This works for LOCAL deployment only. Not compatible with Streamlit Cloud.")
     
-    col1, col2 = st.columns([1, 3])
-    
-    with col1:
-        if st.button("📂 BROWSE FOLDER", use_container_width=True):
-            folder = browse_folder()
-            if folder:
-                st.session_state.selected_folder_path = folder
-    
-    with col2:
-        # Text input with default value from browser
-        default_path = st.session_state.get('selected_folder_path', '')
+    if TKINTER_AVAILABLE:
+        # Local deployment with folder browser
+        st.info("💻 Running locally - Folder browser available!")
+        
+        col1, col2 = st.columns([1, 3])
+        
+        with col1:
+            if st.button("📂 BROWSE FOLDER", use_container_width=True):
+                folder = browse_folder()
+                if folder:
+                    st.session_state.selected_folder_path = folder
+        
+        with col2:
+            # Text input with default value from browser
+            default_path = st.session_state.get('selected_folder_path', '')
+            folder_path = st.text_input(
+                "📁 Folder Path:",
+                value=default_path,
+                placeholder="e.g., C:/Users/YourName/Documents/TestFolder",
+                help="Browse for a folder or enter the full path manually",
+                label_visibility="collapsed"
+            )
+    else:
+        # Cloud deployment - text input only
+        st.warning("☁️ Running on Streamlit Cloud - This feature requires local deployment for full functionality.")
+        st.info("💡 To use this simulator: Download the code and run locally with 'streamlit run app.py'")
+        
         folder_path = st.text_input(
-            "📁 Folder Path:",
-            value=default_path,
-            placeholder="e.g., C:/Users/YourName/Documents/TestFolder",
-            help="Browse for a folder or enter the full path manually",
-            label_visibility="collapsed"
+            "📁 Folder Path (Local deployment only):",
+            placeholder="This feature requires local deployment",
+            disabled=True,
+            help="Please run this app locally to use folder encryption features"
         )
     
     if folder_path:
@@ -265,7 +287,7 @@ def select_folder():
                 return folder_path
             else:
                 st.error("❌ No files found in this folder")
-        elif folder_path:
+        elif folder_path and TKINTER_AVAILABLE:
             st.error("❌ Folder path does not exist")
     
     return None
