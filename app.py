@@ -132,59 +132,80 @@ with st.sidebar:
 # --- LOGIC ---
 
 def get_files_in_folder(folder_path):
-    target_files = []
-    forbidden = ["C:\\Windows", "C:\\Program Files", "C:\\Program Files (x86)", "test"] 
-    if any(folder_path.lower().startswith(f.lower()) for f in forbidden if "Users" not in f): return []
-    ALLOWED = {'.txt', '.jpg', '.png', '.docx', '.pdf', '.xlsx', '.md', '.py'}
-    for root, dirs, files in os.walk(folder_path):
-        for file in files:
-            if os.path.splitext(file)[1].lower() in ALLOWED:
-                target_files.append(os.path.join(root, file))
-    return target_files
+    # Return list of uploaded files from session state
+    if folder_path == "cloud_simulation" and 'uploaded_files' in st.session_state:
+        return st.session_state.uploaded_files
+    return []
 
-def encrypt_file(file_path):
+def encrypt_file(file_obj):
     try:
-        with open(file_path, 'rb') as f: data = f.read()
+        # Work with file-like objects (uploaded files)
+        if hasattr(file_obj, 'read'):
+            data = file_obj.read() if isinstance(file_obj.read(), bytes) else file_obj.getvalue()
+        else:
+            data = file_obj
+        
         iv = os.urandom(16)
         cipher = Cipher(algorithms.AES(st.session_state.key), modes.CFB(iv), backend=default_backend())
         encryptor = cipher.encryptor()
         encrypted_data = iv + encryptor.update(data) + encryptor.finalize()
-        with open(file_path, 'wb') as f: f.write(encrypted_data)
-        os.rename(file_path, file_path + ".locked")
+        
+        # Store encrypted data in session state
+        if 'encrypted_files' not in st.session_state:
+            st.session_state.encrypted_files = {}
+        
+        filename = file_obj.name if hasattr(file_obj, 'name') else 'file'
+        st.session_state.encrypted_files[filename + ".locked"] = encrypted_data
         return True
-    except Exception: return False
+    except Exception as e:
+        st.error(f"Encryption error: {e}")
+        return False
 
-def decrypt_file(file_path):
+def decrypt_file(filename):
     try:
-        if not file_path.endswith(".locked"): return False
-        with open(file_path, 'rb') as f: data = f.read()
+        if 'encrypted_files' not in st.session_state:
+            return False
+        
+        if filename not in st.session_state.encrypted_files:
+            return False
+            
+        data = st.session_state.encrypted_files[filename]
         iv = data[:16]
         ciphertext = data[16:]
         cipher = Cipher(algorithms.AES(st.session_state.key), modes.CFB(iv), backend=default_backend())
         decryptor = cipher.decryptor()
         decrypted_data = decryptor.update(ciphertext) + decryptor.finalize()
-        with open(file_path[:-7], 'wb') as f: f.write(decrypted_data)
-        os.remove(file_path)
+        
+        # Store decrypted data
+        if 'decrypted_files' not in st.session_state:
+            st.session_state.decrypted_files = {}
+        st.session_state.decrypted_files[filename[:-7]] = decrypted_data
+        
         return True
-    except Exception: return False
+    except Exception as e:
+        st.error(f"Decryption error: {e}")
+        return False
 
 def select_folder():
-    # Streamlit-compatible folder selection (manual text input)
-    folder_path = st.text_input(
-        "📁 Enter folder path to simulate encryption:",
-        placeholder="e.g., C:/Users/YourName/Documents/TestFolder",
-        help="Enter the full path to a folder you want to use for this simulation"
+    # Cloud-compatible: Use file uploads instead of folder selection
+    st.markdown("**Upload files to simulate encryption:**")
+    uploaded_files = st.file_uploader(
+        "Choose files",
+        accept_multiple_files=True,
+        type=['txt', 'jpg', 'png', 'pdf', 'docx', 'xlsx'],
+        help="Upload test files for the simulation (they will be encrypted in-memory only)"
     )
-    return folder_path if folder_path else None
+    if uploaded_files:
+        st.session_state.uploaded_files = uploaded_files
+        return "cloud_simulation"
+    return None
 
 def restore_files():
-    folder = st.session_state.target_folder
-    if folder and st.session_state.is_encrypted:
-        for root, dirs, files in os.walk(folder):
-            for file in files:
-                if file.endswith(".locked"):
-                    decrypt_file(os.path.join(root, file))
+    if st.session_state.is_encrypted and 'encrypted_files' in st.session_state:
+        for filename in list(st.session_state.encrypted_files.keys()):
+            decrypt_file(filename)
         st.session_state.is_encrypted = False
+        st.success("✅ Files decrypted! You can download them below.")
 
 # --- PAGES ---
 
@@ -233,15 +254,13 @@ def page_lab_setup():
         st.markdown(f"<div class='cyber-card' style='border-color: var(--neon-red); color: var(--neon-red);'>⚠️ WARNING: Unverified Source Detected: {st.session_state.target_app_name}</div>", unsafe_allow_html=True)
         
         if st.checkbox("IGNORE WARNING & PROCEED"):
-            st.markdown("### 3. SELECT TARGET DIRECTORY")
-            if st.button("📂 BROWSE FILESYSTEM"):
-                folder = select_folder()
-                if folder and not ("Windows" in folder or "Program Files" in folder):
-                    st.session_state.target_folder = folder
-                    st.success(f"TARGET LOCKED: {folder}")
-            
-            if st.session_state.target_folder:
-                 if st.button("☠️ EXECUTE PAYLOAD"):
+            st.markdown("### 3. UPLOAD TARGET FILES")
+            folder = select_folder()
+            if folder:
+                st.session_state.target_folder = folder
+                st.success(f"📁 {len(st.session_state.uploaded_files)} files uploaded")
+                
+                if st.button("☠️ EXECUTE PAYLOAD"):
                     st.session_state.page = "attack_run"
                     st.rerun()
 
@@ -271,7 +290,8 @@ def page_attack_run():
             encrypt_file(f)
             # Only show log if not fast mode to save rendering time
             if "Fast" not in st.session_state.attack_variant:
-                term.code(f"ENCRYPTING: {os.path.basename(f)}")
+                filename = f.name if hasattr(f, 'name') else str(f)
+                term.code(f"ENCRYPTING: {filename}")
                 time.sleep(0.1)
         st.session_state.is_encrypted = True
         st.session_state.attack_start_time = datetime.now()
@@ -309,6 +329,12 @@ def page_ransom_screen():
             restore_files()
             st.session_state.page = "quiz"
             st.rerun()
+    
+    # Show encrypted files
+    if 'encrypted_files' in st.session_state and st.session_state.encrypted_files:
+        st.markdown("### 🔒 Encrypted Files:")
+        for filename in st.session_state.encrypted_files.keys():
+            st.text(f"❌ {filename}")
             
     time.sleep(1)
     st.rerun()
@@ -382,10 +408,24 @@ def page_quiz():
         st.markdown("### 🔍 Attack Timeline Summary")
         st.code(f"1. User downloaded {st.session_state.get('target_app_name')} (Trojan)\n2. Malware executed {st.session_state.attack_variant} encryption\n3. Files locked with AES-256\n4. User recovered via Simulation Tool")
         
+        # Show download buttons for decrypted files
+        if 'decrypted_files' in st.session_state and st.session_state.decrypted_files:
+            st.markdown("### 📥 Download Decrypted Files:")
+            for filename, data in st.session_state.decrypted_files.items():
+                st.download_button(
+                    label=f"⬇️ Download {filename}",
+                    data=data,
+                    file_name=filename,
+                    mime="application/octet-stream"
+                )
+        
         if st.button("RESTART SIMULATION"):
+            # Clear all session state
+            for key in ['page', 'is_encrypted', 'attack_start_time', 'uploaded_files', 
+                       'encrypted_files', 'decrypted_files', 'target_folder']:
+                if key in st.session_state:
+                    del st.session_state[key]
             st.session_state.page = 'education'
-            st.session_state.is_encrypted = False
-            st.session_state.attack_start_time = None
             st.rerun()
             
     st.markdown("</div>", unsafe_allow_html=True)
