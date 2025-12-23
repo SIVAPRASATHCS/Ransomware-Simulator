@@ -1,6 +1,8 @@
 import streamlit as st
 import time
 import os
+import tkinter as tk
+from tkinter import filedialog
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.backends import default_backend
 from datetime import datetime, timedelta
@@ -207,16 +209,45 @@ def decrypt_file(file_path):
         st.error(f"Decryption error for {os.path.basename(file_path)}: {e}")
         return False
 
+def browse_folder():
+    """Open folder browser dialog using tkinter"""
+    try:
+        root = tk.Tk()
+        root.withdraw()
+        root.wm_attributes('-topmost', 1)
+        folder_path = filedialog.askdirectory(
+            master=root,
+            title="Select Folder to Encrypt"
+        )
+        root.destroy()
+        return folder_path if folder_path else None
+    except Exception as e:
+        st.error(f"Browser error: {e}")
+        return None
+
 def select_folder():
     # Local filesystem folder selection
-    st.markdown("**Enter folder path to encrypt:**")
+    st.markdown("**Select folder to encrypt:**")
     st.warning("⚠️ This works for LOCAL deployment only. Not compatible with Streamlit Cloud.")
     
-    folder_path = st.text_input(
-        "📁 Folder Path:",
-        placeholder="e.g., C:/Users/YourName/Documents/TestFolder",
-        help="Enter the full path to a folder. ALL files (images, videos, audio, text, etc.) will be encrypted!"
-    )
+    col1, col2 = st.columns([1, 3])
+    
+    with col1:
+        if st.button("📂 BROWSE FOLDER", use_container_width=True):
+            folder = browse_folder()
+            if folder:
+                st.session_state.selected_folder_path = folder
+    
+    with col2:
+        # Text input with default value from browser
+        default_path = st.session_state.get('selected_folder_path', '')
+        folder_path = st.text_input(
+            "📁 Folder Path:",
+            value=default_path,
+            placeholder="e.g., C:/Users/YourName/Documents/TestFolder",
+            help="Browse for a folder or enter the full path manually",
+            label_visibility="collapsed"
+        )
     
     if folder_path:
         if os.path.exists(folder_path) and os.path.isdir(folder_path):
