@@ -120,6 +120,8 @@ st.markdown("""
 # --- STATE ---
 if 'page' not in st.session_state: st.session_state.page = 'education'
 if 'target_folder' not in st.session_state: st.session_state.target_folder = None
+if 'target_mode' not in st.session_state: st.session_state.target_mode = None  # 'local' or 'virtual'
+if 'target_files' not in st.session_state: st.session_state.target_files = []  # list of paths or file blobs
 if 'is_encrypted' not in st.session_state: st.session_state.is_encrypted = False
 if 'key' not in st.session_state: st.session_state.key = b'01234567890123456789012345678901' 
 if 'attack_start_time' not in st.session_state: st.session_state.attack_start_time = None
@@ -133,6 +135,11 @@ with st.sidebar:
         st.session_state.page = 'education'
         st.session_state.is_encrypted = False
         st.session_state.target_folder = None
+        st.session_state.target_files = []
+        st.session_state.target_mode = None
+        for key in ['encrypted_files', 'encrypted_virtual', 'decrypted_virtual', 'selected_folder_path', 'original_folder_name']:
+            if key in st.session_state:
+                del st.session_state[key]
         st.rerun()
     st.markdown("---")
     st.caption("Ransomware Simulator V2")
@@ -142,19 +149,16 @@ with st.sidebar:
 def get_files_in_folder(folder_path):
     # Get ALL files from the folder (including subdirectories)
     target_files = []
-    
     try:
         for root, dirs, files in os.walk(folder_path):
             for file in files:
-                # Skip hidden/system files
                 if not file.startswith('.'):
                     target_files.append(os.path.join(root, file))
     except Exception as e:
         st.error(f"Error reading folder: {e}")
-    
     return target_files
 
-def encrypt_file(file_path):
+def encrypt_local_file(file_path):
     try:
         # Read file from disk
         with open(file_path, 'rb') as f:
@@ -184,7 +188,7 @@ def encrypt_file(file_path):
         st.error(f"Encryption error for {os.path.basename(file_path)}: {e}")
         return False
 
-def decrypt_file(file_path):
+def decrypt_local_file(file_path):
     try:
         if not file_path.endswith(".locked"):
             return False
@@ -215,6 +219,42 @@ def decrypt_file(file_path):
         st.error(f"Decryption error for {os.path.basename(file_path)}: {e}")
         return False
 
+def encrypt_virtual_files(file_entries):
+    """Encrypt in-memory file entries (list of dicts with name, data)."""
+    if 'encrypted_virtual' not in st.session_state:
+        st.session_state.encrypted_virtual = {}
+    encrypted_count = 0
+    for entry in file_entries:
+        name = entry['name']
+        data = entry['data']
+        iv = os.urandom(16)
+        cipher = Cipher(algorithms.AES(st.session_state.key), modes.CFB(iv), backend=default_backend())
+        encryptor = cipher.encryptor()
+        encrypted_data = iv + encryptor.update(data) + encryptor.finalize()
+        st.session_state.encrypted_virtual[name + '.locked'] = encrypted_data
+        encrypted_count += 1
+    return encrypted_count
+
+def decrypt_virtual_files():
+    if 'encrypted_virtual' not in st.session_state:
+        return 0
+    decrypted = 0
+    if 'decrypted_virtual' not in st.session_state:
+        st.session_state.decrypted_virtual = {}
+    for name, data in st.session_state.encrypted_virtual.items():
+        try:
+            iv = data[:16]
+            ciphertext = data[16:]
+            cipher = Cipher(algorithms.AES(st.session_state.key), modes.CFB(iv), backend=default_backend())
+            decryptor = cipher.decryptor()
+            decrypted_data = decryptor.update(ciphertext) + decryptor.finalize()
+            original_name = name[:-7] if name.endswith('.locked') else name
+            st.session_state.decrypted_virtual[original_name] = decrypted_data
+            decrypted += 1
+        except Exception as e:
+            st.error(f"Decryption error for {name}: {e}")
+    return decrypted
+
 def browse_folder():
     """Open folder browser dialog using tkinter"""
     if not TKINTER_AVAILABLE:
@@ -233,24 +273,75 @@ def browse_folder():
         st.error(f"Browser error: {e}")
         return None
 
+def load_demo_folder():
+    # Create in-memory demo files to simulate a folder
+    samples = [
+        {"name": "report_Q4.pdf", "data": b"Demo PDF report content"},
+        {"name": "family_photo.jpg", "data": b"JPEG_IMAGE_BYTES"},
+        {"name": "song_sample.mp3", "data": b"MP3_AUDIO_BYTES"},
+        {"name": "meeting_notes.txt", "data": b"These are sample meeting notes for awareness training."},
+        {"name": "invoice.xlsx", "data": b"XLSX_BYTES"}
+    ]
+    st.session_state.target_mode = 'virtual'
+    st.session_state.target_files = samples
+    st.session_state.original_folder_name = 'Awareness_Demo_Folder'
+    st.session_state.target_folder = 'DEMO'
+    st.session_state.is_encrypted = False
+    st.success("✅ Demo folder loaded (5 files)")
+    return True
+
+def set_uploaded_files(uploaded_files):
+    file_entries = []
+    for uf in uploaded_files:
+        try:
+            data = uf.read()
+            file_entries.append({"name": uf.name, "data": data})
+        except Exception as e:
+            st.error(f"Failed to read {uf.name}: {e}")
+    if file_entries:
+        st.session_state.target_mode = 'virtual'
+        st.session_state.target_files = file_entries
+        st.session_state.original_folder_name = 'Uploaded_Folder'
+        st.session_state.target_folder = 'UPLOADS'
+        st.session_state.is_encrypted = False
+        st.success(f"✅ Loaded {len(file_entries)} files for simulation")
+        return True
+    return False
+
 def select_folder():
-    # Local filesystem folder selection
-    st.markdown("**Select folder to encrypt:**")
-    
+    st.markdown("**Select content to encrypt:**")
+
+    # Option A: Demo virtual folder (cloud-safe)
+    with st.expander("🎁 Use Demo Folder (cloud safe)", expanded=True):
+        if st.button("Load Demo Folder", use_container_width=True):
+            load_demo_folder()
+            return 'virtual'
+
+    # Option B: Upload multiple files (cloud safe)
+    with st.expander("☁️ Upload Files (treat as folder)"):
+        uploads = st.file_uploader(
+            "Select multiple files (images, audio, video, docs)",
+            accept_multiple_files=True,
+            type=None,
+            help="Uploaded files stay in memory and are encrypted/decrypted for the simulation"
+        )
+        if uploads:
+            if set_uploaded_files(uploads):
+                return 'virtual'
+
+    # Option C: Local filesystem (requires local run)
+    st.markdown("---")
+    st.markdown("### 🖥️ Local Folder (requires local run)")
+
     if TKINTER_AVAILABLE:
-        # Local deployment with folder browser
         st.info("💻 Running locally - Folder browser available!")
-        
         col1, col2 = st.columns([1, 3])
-        
         with col1:
             if st.button("📂 BROWSE FOLDER", use_container_width=True):
                 folder = browse_folder()
                 if folder:
                     st.session_state.selected_folder_path = folder
-        
         with col2:
-            # Text input with default value from browser
             default_path = st.session_state.get('selected_folder_path', '')
             folder_path = st.text_input(
                 "📁 Folder Path:",
@@ -260,50 +351,53 @@ def select_folder():
                 label_visibility="collapsed"
             )
     else:
-        # Cloud deployment - text input only
-        st.warning("☁️ Running on Streamlit Cloud - This feature requires local deployment for full functionality.")
-        st.info("💡 To use this simulator: Download the code and run locally with 'streamlit run app.py'")
-        
+        st.warning("☁️ Running on Streamlit Cloud - Local folders are unavailable. Use demo or upload files above.")
         folder_path = st.text_input(
-            "📁 Folder Path (Local deployment only):",
-            placeholder="This feature requires local deployment",
+            "📁 Folder Path (local only):",
+            placeholder="Run locally to enable",
             disabled=True,
-            help="Please run this app locally to use folder encryption features"
+            help="Local folder access requires running 'streamlit run app.py' on your machine"
         )
-    
+
     if folder_path:
         if os.path.exists(folder_path) and os.path.isdir(folder_path):
-            # Check it's not a system folder
             forbidden = ["Windows", "Program Files", "System32", "ProgramData"]
             if any(f in folder_path for f in forbidden):
                 st.error("❌ Cannot target system folders!")
                 return None
-            
-            # Get all files in folder
             files = get_files_in_folder(folder_path)
             if files:
+                st.session_state.target_mode = 'local'
                 st.session_state.target_files = files
                 st.session_state.original_folder_name = os.path.basename(folder_path)
+                st.session_state.target_folder = folder_path
+                st.session_state.is_encrypted = False
                 return folder_path
             else:
                 st.error("❌ No files found in this folder")
         elif folder_path and TKINTER_AVAILABLE:
             st.error("❌ Folder path does not exist")
-    
+
     return None
 
 def restore_files():
-    if st.session_state.is_encrypted and 'encrypted_files' in st.session_state:
+    if not st.session_state.is_encrypted:
+        return
+    mode = st.session_state.get('target_mode')
+    if mode == 'local' and 'encrypted_files' in st.session_state:
         file_count = len(st.session_state.encrypted_files)
         decrypted_count = 0
-        
         for file_path in st.session_state.encrypted_files:
             if os.path.exists(file_path):
-                if decrypt_file(file_path):
+                if decrypt_local_file(file_path):
                     decrypted_count += 1
-        
         st.session_state.is_encrypted = False
         st.success(f"✅ Folder decrypted! ({decrypted_count}/{file_count} files restored)")
+    elif mode == 'virtual' and 'encrypted_virtual' in st.session_state:
+        file_count = len(st.session_state.encrypted_virtual)
+        decrypted_count = decrypt_virtual_files()
+        st.session_state.is_encrypted = False
+        st.success(f"✅ Virtual folder decrypted! ({decrypted_count}/{file_count} files restored)")
 
 # --- PAGES ---
 
@@ -352,28 +446,27 @@ def page_lab_setup():
         st.markdown(f"<div class='cyber-card' style='border-color: var(--neon-red); color: var(--neon-red);'>⚠️ WARNING: Unverified Source Detected: {st.session_state.target_app_name}</div>", unsafe_allow_html=True)
         
         if st.checkbox("IGNORE WARNING & PROCEED"):
-            st.markdown("### 3. SELECT TARGET FOLDER")
-            folder = select_folder()
-            if folder:
-                st.session_state.target_folder = folder
-                folder_name = st.session_state.get('original_folder_name', os.path.basename(folder))
-                files = st.session_state.target_files
-                
-                st.success(f"📁 Folder Locked: **{folder_name}** ({len(files)} files)")
-                
+            st.markdown("### 3. CHOOSE CONTENT SOURCE")
+            selection = select_folder()
+            if selection:
+                folder_name = st.session_state.get('original_folder_name', 'Selected_Folder')
+                files = st.session_state.get('target_files', [])
+                st.success(f"📁 Target Ready: **{folder_name}** ({len(files)} files)")
+
                 # Show file types breakdown
                 file_types = {}
                 for f in files:
-                    ext = os.path.splitext(f)[1].lower() or 'no extension'
+                    ext = os.path.splitext(f if isinstance(f, str) else f['name'])[1].lower() or 'no extension'
                     file_types[ext] = file_types.get(ext, 0) + 1
                 
-                with st.expander("📂 View Folder Contents"):
+                with st.expander("📂 View Contents"):
                     st.write("**File Types:**")
                     for ext, count in sorted(file_types.items()):
                         st.text(f"  {ext}: {count} file(s)")
                     st.write("\n**Files:**")
                     for f in files[:20]:  # Show first 20 files
-                        st.text(f"📄 {os.path.basename(f)}")
+                        fname = f if isinstance(f, str) else f['name']
+                        st.text(f"📄 {os.path.basename(fname)}")
                     if len(files) > 20:
                         st.text(f"... and {len(files) - 20} more files")
                 
@@ -399,18 +492,31 @@ def page_attack_run():
     time.sleep(1)
     
     # Encryption
-    folder = st.session_state.target_folder
-    files = st.session_state.target_files
+    mode = st.session_state.get('target_mode')
+    files = st.session_state.get('target_files', [])
+
+    if not mode or not files:
+        st.error("No target selected. Please go back and choose a folder/files.")
+        st.session_state.page = 'lab_setup'
+        st.rerun()
     
     if not st.session_state.is_encrypted:
         encrypted_count = 0
-        for f in files:
-            if encrypt_file(f):
-                encrypted_count += 1
-            # Only show log if not fast mode to save rendering time
+        if mode == 'local':
+            st.session_state.encrypted_files = []
+            for f in files:
+                if encrypt_local_file(f):
+                    encrypted_count += 1
+                if "Fast" not in st.session_state.attack_variant:
+                    term.code(f"ENCRYPTING: {os.path.basename(f)}")
+                    time.sleep(0.05)
+        elif mode == 'virtual':
+            st.session_state.encrypted_virtual = {}
+            encrypted_count = encrypt_virtual_files(files)
             if "Fast" not in st.session_state.attack_variant:
-                term.code(f"ENCRYPTING: {os.path.basename(f)}")
-                time.sleep(0.05)
+                for entry in files[:10]:
+                    term.code(f"ENCRYPTING: {os.path.basename(entry['name'])}")
+                    time.sleep(0.05)
         st.session_state.is_encrypted = True
         st.session_state.attack_start_time = datetime.now()
         term.code(f"\n✓ ENCRYPTION COMPLETE: {encrypted_count} files locked")
@@ -430,7 +536,11 @@ def page_ransom_screen():
             st.rerun()
             
     folder_name = st.session_state.get('original_folder_name', 'Your Folder')
-    file_count = len(st.session_state.get('encrypted_files', []))
+    mode = st.session_state.get('target_mode')
+    if mode == 'virtual':
+        file_count = len(st.session_state.get('encrypted_virtual', {}))
+    else:
+        file_count = len(st.session_state.get('encrypted_files', []))
     
     st.markdown(f"""
     <div class='ransom-container'>
@@ -454,7 +564,14 @@ def page_ransom_screen():
             st.rerun()
     
     # Show encrypted files
-    if 'encrypted_files' in st.session_state and st.session_state.encrypted_files:
+    if mode == 'virtual' and st.session_state.get('encrypted_virtual'):
+        with st.expander("🔒 View Encrypted Files"):
+            names = list(st.session_state.encrypted_virtual.keys())
+            for name in names[:30]:
+                st.text(f"❌ {os.path.basename(name)}")
+            if len(names) > 30:
+                st.text(f"... and {len(names) - 30} more locked files")
+    elif st.session_state.get('encrypted_files'):
         with st.expander("🔒 View Encrypted Files"):
             for file_path in st.session_state.encrypted_files[:30]:
                 st.text(f"❌ {os.path.basename(file_path)}")
@@ -533,15 +650,22 @@ def page_quiz():
         st.markdown("### 🔍 Attack Timeline Summary")
         folder_name = st.session_state.get('original_folder_name', 'test_folder')
         folder_path = st.session_state.get('target_folder', 'N/A')
-        file_count = len(st.session_state.get('encrypted_files', []))
-        st.code(f"1. User downloaded {st.session_state.get('target_app_name')} (Trojan)\n2. Malware executed {st.session_state.attack_variant} encryption\n3. Folder '{folder_name}' locked with AES-256\n   Location: {folder_path}\n   Files affected: {file_count} (all file types)\n4. Files restored with decryption key")
+        mode = st.session_state.get('target_mode')
+        if mode == 'virtual':
+            file_count = len(st.session_state.get('encrypted_virtual', {}))
+            location_text = "In-memory simulation (cloud-safe)"
+        else:
+            file_count = len(st.session_state.get('encrypted_files', []))
+            location_text = folder_path
+        st.code(f"1. User downloaded {st.session_state.get('target_app_name')} (Trojan)\n2. Malware executed {st.session_state.attack_variant} encryption\n3. Target '{folder_name}' locked with AES-256\n   Location: {location_text}\n   Files affected: {file_count}\n4. Files restored with decryption key")
         
-        st.success("✅ All files in the folder have been decrypted and restored to their original state!")
+        st.success("✅ All files have been decrypted and restored!")
         
         if st.button("RESTART SIMULATION"):
             # Clear all session state
             for key in ['page', 'is_encrypted', 'attack_start_time', 'target_files', 
-                       'encrypted_files', 'target_folder', 'original_folder_name']:
+                       'encrypted_files', 'encrypted_virtual', 'decrypted_virtual',
+                       'target_folder', 'original_folder_name', 'target_mode', 'selected_folder_path']:
                 if key in st.session_state:
                     del st.session_state[key]
             st.session_state.page = 'education'
